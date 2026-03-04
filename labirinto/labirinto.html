@@ -1,0 +1,378 @@
+<!DOCTYPE html>
+<html lang="pt">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Labirinto de Sombra 2.0</title>
+    <style>
+        body {
+            background-color: #1a1a1a;
+            color: #00ff9d; /* Verde Matrix */
+            font-family: 'Courier New', Courier, monospace;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: flex-start; /* Mudado para topo para caber tudo em mobile */
+            height: 100vh;
+            margin: 0;
+            overflow: hidden; /* Impede scroll */
+            touch-action: none; /* Impede zoom no duplo toque */
+        }
+
+        header {
+            text-align: center;
+            padding: 10px;
+            flex-shrink: 0;
+        }
+
+        h1 { margin: 0; font-size: 1.2rem; text-transform: uppercase; letter-spacing: 2px; text-shadow: 0 0 5px #00ff9d; }
+        p { margin: 5px 0 0 0; font-size: 0.8rem; color: #aaa; }
+
+        #game-container {
+            position: relative;
+            box-shadow: 0 0 15px rgba(0, 255, 157, 0.1);
+            border: 2px solid #333;
+            margin: 10px 0;
+            flex-shrink: 0; /* Impede que o canvas encolha demasiado */
+        }
+
+        canvas { display: block; background-color: #000; }
+
+        /* Modal Fim de Jogo */
+        #stats-modal {
+            display: none;
+            position: absolute;
+            top: 50%; left: 50%;
+            transform: translate(-50%, -50%);
+            background: rgba(0, 20, 10, 0.95);
+            border: 2px solid #00ff9d;
+            padding: 1.5rem;
+            text-align: center;
+            border-radius: 8px;
+            z-index: 100;
+            min-width: 250px;
+            box-shadow: 0 0 50px rgba(0, 255, 157, 0.2);
+        }
+        .stat-line { display: flex; justify-content: space-between; margin: 5px 0; border-bottom: 1px dotted #333; font-size: 0.9rem;}
+        .total-line { margin-top: 15px; font-weight: bold; color: #fff; font-size: 1rem; }
+        button.reset-btn { margin-top: 15px; padding: 10px 20px; background: #00ff9d; border: none; font-weight: bold; cursor: pointer; width: 100%; font-size: 1rem;}
+
+        /* CONTROLOS MÓVEIS (D-PAD) */
+        #controls {
+            display: grid;
+            grid-template-columns: 60px 60px 60px;
+            grid-template-rows: 60px 60px;
+            gap: 5px;
+            margin-top: auto; /* Empurra para o fundo */
+            margin-bottom: 20px;
+        }
+
+        .ctrl-btn {
+            background: rgba(255, 255, 255, 0.1);
+            border: 2px solid #00ff9d;
+            border-radius: 10px;
+            color: #00ff9d;
+            font-size: 24px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            user-select: none;
+            -webkit-tap-highlight-color: transparent;
+        }
+        .ctrl-btn:active { background: #00ff9d; color: #000; }
+        
+        /* Posicionamento dos botões na grelha */
+        #btn-up { grid-column: 2; grid-row: 1; }
+        #btn-left { grid-column: 1; grid-row: 2; }
+        #btn-down { grid-column: 2; grid-row: 2; }
+        #btn-right { grid-column: 3; grid-row: 2; }
+
+    </style>
+</head>
+<body>
+
+    <header>
+        <h1>Labirinto</h1>
+        <p>Encontra o Vermelho. Cuidado com os becos.</p>
+    </header>
+
+    <div id="game-container">
+        <canvas id="mazeCanvas"></canvas>
+        
+        <div id="stats-modal">
+            <h2 style="color:#00ff9d; margin-top:0;">ESCAPOU!</h2>
+            <div class="stat-line"><span>⬆️ Cima:</span> <span id="stat-up">0</span></div>
+            <div class="stat-line"><span>⬇️ Baixo:</span> <span id="stat-down">0</span></div>
+            <div class="stat-line"><span>⬅️ Esquerda:</span> <span id="stat-left">0</span></div>
+            <div class="stat-line"><span>➡️ Direita:</span> <span id="stat-right">0</span></div>
+            <div class="stat-line total-line"><span>TOTAL:</span> <span id="stat-total">0</span></div>
+            <button class="reset-btn" onclick="resetGame()">JOGAR DE NOVO</button>
+        </div>
+    </div>
+
+    <div id="controls">
+        <div class="ctrl-btn" id="btn-up">▲</div>
+        <div class="ctrl-btn" id="btn-left">◀</div>
+        <div class="ctrl-btn" id="btn-down">▼</div>
+        <div class="ctrl-btn" id="btn-right">▶</div>
+    </div>
+
+<script>
+    const canvas = document.getElementById('mazeCanvas');
+    const ctx = canvas.getContext('2d');
+    const modal = document.getElementById('stats-modal');
+
+    // Configuração Dinâmica
+    let cols, rows, cellSize;
+    // Dificuldade: Ajuste aqui. Mais colunas = labirinto mais complexo.
+    const desiredCols = 21; 
+    
+    // Raio de visão
+    const viewRadius = 4;
+
+    let grid = [];
+    let player = { x: 0, y: 0 };
+    let goal = { x: 0, y: 0 };
+    let stats = { up: 0, down: 0, left: 0, right: 0, total: 0 };
+    let gameActive = true;
+
+    // Classe Célula
+    class Cell {
+        constructor(c, r) {
+            this.c = c;
+            this.r = r;
+            // Paredes: Top, Right, Bottom, Left
+            this.walls = [true, true, true, true]; 
+            this.visited = false;
+        }
+
+        checkNeighbors() {
+            let neighbors = [];
+            let top = getIndex(this.c, this.r - 1);
+            let right = getIndex(this.c + 1, this.r);
+            let bottom = getIndex(this.c, this.r + 1);
+            let left = getIndex(this.c - 1, this.r);
+
+            if (top && !top.visited) neighbors.push(top);
+            if (right && !right.visited) neighbors.push(right);
+            if (bottom && !bottom.visited) neighbors.push(bottom);
+            if (left && !left.visited) neighbors.push(left);
+
+            if (neighbors.length > 0) {
+                let r = Math.floor(Math.random() * neighbors.length);
+                return neighbors[r];
+            }
+            return undefined;
+        }
+    }
+
+    function getIndex(c, r) {
+        if (c < 0 || r < 0 || c > cols - 1 || r > rows - 1) return undefined;
+        return grid[c + r * cols];
+    }
+
+    // 1. Ajustar ao ecrã (Responsivo)
+    function resizeAndSetup() {
+        // Tenta usar 90% da largura do ecrã, mas limita a 600px
+        const maxWidth = Math.min(window.innerWidth * 0.95, 600);
+        // Tenta usar 60% da altura do ecrã para sobrar espaço para botões
+        const maxHeight = window.innerHeight * 0.60;
+
+        // Calcula tamanho da célula baseado na largura disponível
+        cellSize = Math.floor(maxWidth / desiredCols);
+        
+        // Garante que não fica minúsculo
+        if (cellSize < 15) cellSize = 15;
+
+        cols = desiredCols;
+        rows = Math.floor(maxHeight / cellSize);
+        
+        // Assegurar que rows é impar para algoritmos de labirinto (estético)
+        if (rows % 2 === 0) rows--; 
+
+        canvas.width = cols * cellSize;
+        canvas.height = rows * cellSize;
+
+        setupMaze();
+        draw();
+    }
+
+    // 2. Gerar Labirinto com Loops
+    function setupMaze() {
+        grid = [];
+        for (let r = 0; r < rows; r++) {
+            for (let c = 0; c < cols; c++) {
+                grid.push(new Cell(c, r));
+            }
+        }
+        
+        // Algoritmo Recursive Backtracker (Cria o caminho perfeito inicial)
+        let current = grid[0];
+        let stack = [];
+        current.visited = true;
+
+        while(true) {
+            let next = current.checkNeighbors();
+            if (next) {
+                next.visited = true;
+                stack.push(current);
+                removeWalls(current, next);
+                current = next;
+            } else if (stack.length > 0) {
+                current = stack.pop();
+            } else {
+                break;
+            }
+        }
+
+        // NOVIDADE: Criar loops (remove paredes extra aleatoriamente)
+        // Percorre 10% das células e tenta remover uma parede aleatória
+        let extraPaths = Math.floor((cols * rows) * 0.10); 
+        for(let i=0; i<extraPaths; i++) {
+            let rC = Math.floor(Math.random() * cols);
+            let rR = Math.floor(Math.random() * rows);
+            let cell = grid[rC + rR * cols];
+            
+            // Remove parede aleatória (0 a 3) se não for borda do mapa
+            let wallDir = Math.floor(Math.random() * 4);
+            if(wallDir === 0 && cell.r > 0) { cell.walls[0] = false; getIndex(cell.c, cell.r-1).walls[2] = false; }
+            else if(wallDir === 1 && cell.c < cols-1) { cell.walls[1] = false; getIndex(cell.c+1, cell.r).walls[3] = false; }
+            else if(wallDir === 2 && cell.r < rows-1) { cell.walls[2] = false; getIndex(cell.c, cell.r+1).walls[0] = false; }
+            else if(wallDir === 3 && cell.c > 0) { cell.walls[3] = false; getIndex(cell.c-1, cell.r).walls[1] = false; }
+        }
+
+        // Definir Jogador e Objetivo
+        player = { x: 0, y: 0 };
+        goal = { x: cols - 1, y: rows - 1 };
+    }
+
+    function removeWalls(a, b) {
+        let x = a.c - b.c;
+        if (x === 1) { a.walls[3] = false; b.walls[1] = false; }
+        if (x === -1) { a.walls[1] = false; b.walls[3] = false; }
+        let y = a.r - b.r;
+        if (y === 1) { a.walls[0] = false; b.walls[2] = false; }
+        if (y === -1) { a.walls[2] = false; b.walls[0] = false; }
+    }
+
+    // 3. Desenho
+    function draw() {
+        ctx.fillStyle = "black";
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+        for (let i = 0; i < grid.length; i++) {
+            let cell = grid[i];
+            let dist = Math.sqrt(Math.pow(cell.c - player.x, 2) + Math.pow(cell.r - player.y, 2));
+
+            if (dist < viewRadius + 1) { // +1 para ver ligeiramente as paredes ao longe
+                drawCell(cell, dist);
+            }
+        }
+
+        // Jogador
+        ctx.fillStyle = "#00ff9d";
+        let pPad = cellSize * 0.25;
+        ctx.fillRect(player.x * cellSize + pPad, player.y * cellSize + pPad, cellSize - (pPad*2), cellSize - (pPad*2));
+
+        // Objetivo
+        let distGoal = Math.sqrt(Math.pow(goal.x - player.x, 2) + Math.pow(goal.y - player.y, 2));
+        if (distGoal < viewRadius) {
+            ctx.fillStyle = "#ff3333";
+            ctx.fillRect(goal.x * cellSize + pPad, goal.y * cellSize + pPad, cellSize - (pPad*2), cellSize - (pPad*2));
+        }
+    }
+
+    function drawCell(cell, dist) {
+        let x = cell.c * cellSize;
+        let y = cell.r * cellSize;
+        
+        let opacity = 1 - (dist / viewRadius);
+        if (opacity < 0) opacity = 0;
+        opacity = Math.max(opacity, 0.15); // Mínimo de luz ambiente
+
+        ctx.strokeStyle = `rgba(0, 255, 157, ${opacity})`;
+        ctx.lineWidth = 2;
+
+        if (cell.walls[0]) { ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(x + cellSize, y); ctx.stroke(); }
+        if (cell.walls[1]) { ctx.beginPath(); ctx.moveTo(x + cellSize, y); ctx.lineTo(x + cellSize, y + cellSize); ctx.stroke(); }
+        if (cell.walls[2]) { ctx.beginPath(); ctx.moveTo(x + cellSize, y + cellSize); ctx.lineTo(x, y + cellSize); ctx.stroke(); }
+        if (cell.walls[3]) { ctx.beginPath(); ctx.moveTo(x, y + cellSize); ctx.lineTo(x, y); ctx.stroke(); }
+    }
+
+    // 4. Movimento e Lógica
+    function move(dir) {
+        if (!gameActive) return;
+
+        let cell = getIndex(player.x, player.y);
+        let moved = false;
+
+        if (dir === 'up' && !cell.walls[0]) { player.y--; stats.up++; moved = true; }
+        if (dir === 'right' && !cell.walls[1]) { player.x++; stats.right++; moved = true; }
+        if (dir === 'down' && !cell.walls[2]) { player.y++; stats.down++; moved = true; }
+        if (dir === 'left' && !cell.walls[3]) { player.x--; stats.left++; moved = true; }
+
+        if (moved) {
+            stats.total++;
+            draw();
+            checkWin();
+        }
+    }
+
+    function checkWin() {
+        if (player.x === goal.x && player.y === goal.y) {
+            gameActive = false;
+            document.getElementById('stat-up').innerText = stats.up;
+            document.getElementById('stat-down').innerText = stats.down;
+            document.getElementById('stat-left').innerText = stats.left;
+            document.getElementById('stat-right').innerText = stats.right;
+            document.getElementById('stat-total').innerText = stats.total;
+            modal.style.display = 'block';
+        }
+    }
+
+    function resetGame() {
+        modal.style.display = 'none';
+        stats = { up: 0, down: 0, left: 0, right: 0, total: 0 };
+        gameActive = true;
+        resizeAndSetup(); // Regenera tudo
+    }
+
+    // Event Listeners (Teclado)
+    document.addEventListener('keydown', (e) => {
+        if (e.key === 'ArrowUp' || e.key === 'w') move('up');
+        if (e.key === 'ArrowRight' || e.key === 'd') move('right');
+        if (e.key === 'ArrowDown' || e.key === 's') move('down');
+        if (e.key === 'ArrowLeft' || e.key === 'a') move('left');
+    });
+
+    // Event Listeners (Botões de Ecrã / Touch)
+    // Usamos 'touchstart' para resposta rápida em mobile, e 'click' para PC
+    const bindBtn = (id, dir) => {
+        const btn = document.getElementById(id);
+        const action = (e) => {
+            e.preventDefault(); // Evita duplo clique ou zoom
+            move(dir);
+        };
+        btn.addEventListener('touchstart', action, {passive: false});
+        btn.addEventListener('mousedown', action); // Para testar com rato no PC
+    };
+
+    bindBtn('btn-up', 'up');
+    bindBtn('btn-down', 'down');
+    bindBtn('btn-left', 'left');
+    bindBtn('btn-right', 'right');
+
+    // Inicializar e recalcular se a janela mudar
+    window.addEventListener('resize', () => {
+        // Debounce simples para não recarregar mil vezes ao arrastar janela
+        clearTimeout(window.resizeTimer);
+        window.resizeTimer = setTimeout(resizeAndSetup, 200);
+    });
+
+    // Arranque
+    resizeAndSetup();
+
+</script>
+</body>
+</html>
